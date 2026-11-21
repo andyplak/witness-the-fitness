@@ -23,6 +23,35 @@ explicitly out of scope for this document.
   and present it alongside Phase 1/2 data. Details are pending — the user will supply the wearable brand/app and
   an example historical spreadsheet; Phase 3 requirements should be revisited once that information is available.
 
+## Phase 1 Architecture Decisions (confirmed)
+
+The Overview states that architecture/technology choices beyond "Laravel + Laravel Boost" are out of scope for
+this document. The following decisions were nonetheless confirmed while planning Phase 1's implementation, since
+they materially shape several requirements below (notably FR-CAPTURE-001/003, the Security &amp; Access and
+Performance NFRs, and the Error Handling table) — recorded here for continuity rather than left to be
+re-derived:
+
+- **Frontend stack**: Blade + Livewire + Alpine.js. No Inertia/SPA build.
+- **App authentication**: a minimal single-user guard — one env-configured email/password, a login form only
+  (no registration or password-reset flows, since this is explicitly a single-user tool).
+- **Gmail capture mechanism**: rather than the Laravel app holding its own Gmail OAuth2 credentials and polling
+  in a queued job, capture is performed by a **local Claude Code session using its own Gmail MCP connection**.
+  A documented skill/instructions file tells Claude what emails to look for (Playtomic/David Lloyd bookings,
+  cancellations, modifications) and how to extract the relevant fields; Claude then pushes each captured event
+  into the app via an API endpoint rather than the app parsing raw email content itself. This is triggered
+  automatically once daily by a local cron job (or systemd timer) running Claude Code in non-interactive/headless
+  mode (`claude -p`) against that instructions file — not a manually-run command and not a Laravel-side
+  scheduled job.
+- **Deployment topology**: the production Laravel app is hosted on a separate machine from the one running the
+  local Gmail-capture cron job, and is itself internet-facing (so the dashboard is reachable from anywhere).
+  Consequently the capture ingestion endpoint is a real call over the internet, not a loopback call, and needs
+  its own hardening distinct from the web UI's login (dedicated API token, HTTPS, request throttling, and full
+  request logging of every call including rejected ones).
+- **Live score capture scope**: FR-SCORE-001's live-capture half (a post-event score from a Playtomic API or a
+  post-match notification email) is deferred to a follow-up piece of work, gated on first confirming whether
+  such a source actually exists (see Open Questions). Phase 1 implements score storage/display only for scores
+  extracted during spreadsheet backfill (FR-BACKFILL-003).
+
 ## User Stories
 
 - As the player, I want my court bookings to be captured automatically from confirmation emails/APIs, so I don't
@@ -117,6 +146,9 @@ to the review queue (per FR-CAPTURE-005) so the user can map it to an existing p
 Playtomic API, or parsed from a post-match result email/notification Playtomic sends the player — the system
 shall store that score against the corresponding session. Which of these sources actually exists and what it
 returns is unconfirmed (see Research findings above and Open Questions) and needs checking before this is built.
+**Phase 1 scope note**: this live-capture half of FR-SCORE-001 is deferred to a follow-up spike once a real
+source is confirmed (see Phase 1 Architecture Decisions above); Phase 1 itself only populates scores via
+spreadsheet-backfill extraction (FR-BACKFILL-003).
 
 **FR-SCORE-002**: The system shall display the recorded score, where available, on a session's detail view.
 
@@ -273,14 +305,19 @@ sync restrictions, the system shall omit that metric rather than erroring.
 
 ### Performance
 - Personal-scale data volume (expected low hundreds of sessions/year); no high-throughput requirements.
-- Email/API polling and parsing may run as background/queued jobs; the dashboard itself should load without
-  waiting on live Gmail/API calls.
+- Capture is driven externally (a daily local Claude Code/Gmail-MCP run pushing to the app's ingestion API —
+  see Phase 1 Architecture Decisions) rather than an internal Laravel queue worker polling Gmail; the dashboard
+  itself should load without waiting on that capture process or any live Gmail/API calls.
 
 ### Security & Access
-- Single-user application; the app itself shall still require authentication to view any data (specific
-  mechanism is an architecture decision, out of scope here).
+- Single-user application; the app itself requires authentication to view any data — a minimal single-user
+  guard (env-configured email/password, login only; see Phase 1 Architecture Decisions).
+- The capture ingestion endpoint is a separate, internet-facing entry point (the production app and the local
+  capture trigger run on different machines) and is secured independently of the web UI login: a dedicated API
+  token, HTTPS, request throttling, and logging of every call (including rejected ones).
 - Gmail access shall use the minimum scope/query needed to read booking-related emails (read-only; not full
-  mailbox access where avoidable).
+  mailbox access where avoidable) — under the confirmed mechanism this is the local Claude Code session's own
+  Gmail MCP connection, not a credential the Laravel app holds.
 - Phase 2 health data (heart rate, sleep) is sensitive personal data; it shall not be exposed to or shared with
   any third party, and access shall be subject to the same authentication as the rest of the app.
 
@@ -368,7 +405,7 @@ breakdowns by Friendly/Competitive reflect the change
 | Error Condition | Handling |
 |---|---|
 | Unparseable/unrecognized email format | Routed to review queue (or dead-letter list) with raw email reference; not dropped, not mis-recorded |
-| Gmail access/token expired or revoked | Background capture pauses; dashboard shows a clear "Gmail not connected" state until reauthorized |
+| Daily capture run hasn't executed/succeeded (cron failure, Gmail MCP re-auth needed, etc.) | Capture simply doesn't produce new sessions that day; dashboard shows a "capture not running" state once the last successful ingestion event is too old, until a run succeeds again |
 | Venue API unavailable/rate-limited | Falls back to email parsing for that venue (per FR-CAPTURE-003) where possible; otherwise queues retry |
 | Duplicate booking detected (API + email, or backfill + live capture) | Flagged for review rather than auto-merged or double-counted |
 | Unmatched player name | Session routed to review queue (FR-PLAYER-002); user maps to existing or new player |
@@ -382,9 +419,18 @@ breakdowns by Friendly/Competitive reflect the change
       value, a nullable `score` field, and a Friendly/Competitive flag
 - [ ] Session status lifecycle: `pending_review` → `confirmed` / `discarded`; `confirmed` → `cancelled`
 - [ ] Friendly/Competitive default logic (booking source vs league/championship source) + manual override
-- [ ] Gmail connection (MCP) + read-only query/polling for booking-related emails
-- [ ] Per-venue email parser(s) (starting with Playtomic, David Lloyd formats) with confidence scoring
-- [ ] Playtomic API client (booking read) where available
+- [ ] `POST /api/capture/events` ingestion endpoint — token-authenticated, HTTPS, throttled, every call (including
+      rejected ones) logged — accepting the fields a local Claude Code/Gmail-MCP session extracts per booking,
+      cancellation, or modification email (see Phase 1 Architecture Decisions)
+- [ ] Local Claude Code capture skill/instructions file (what emails to look for, what fields to extract, which
+      endpoint to call) + a daily cron/systemd-timer entry running `claude -p` headlessly against it, with a
+      narrow tool-permission allowlist (not a blanket permissions-skip) and output logging so a failed unattended
+      run is visible
+- [ ] Ingestion-endpoint validation/confidence-scoring logic (player identity matching + confidence routing per
+      FR-CAPTURE-004/005) operating on Claude's extracted fields — no bespoke per-venue regex email parsers
+      needed, since extraction is Claude's own language understanding rather than a fixed template
+- [ ] Playtomic API client (booking read) where available — remains speculative/stretch; no confirmed
+      player-accessible endpoint exists (see Research findings)
 - [ ] David Lloyd API client (booking read) if an API exists; otherwise document as email-only
 - [ ] Cancellation matching logic against existing sessions
 - [ ] Player-change/roster-update handling with history retention
@@ -392,13 +438,16 @@ breakdowns by Friendly/Competitive reflect the change
 - [ ] Duplicate-detection logic (API vs email, backfill vs live, backfill vs historical scan)
 - [ ] Spreadsheet import job per FR-BACKFILL-001/002/003 (column mapping, group-session handling, note-based
       score/competitive extraction with regex patterns for common result formats)
-- [ ] Historical Gmail scan job (on-demand, bounded by date range)
+- [ ] Historical Gmail scan job (on-demand, bounded by date range) — triggered the same way as daily capture
+      (local Claude Code + Gmail MCP), just scoped to a historical date range instead of "since last run"
 - [ ] Stats aggregation queries (by sport/venue/partner/time period, trends, streaks, win/loss, Friendly vs
       Competitive)
-- [ ] Simple authentication for app access
+- [x] Simple authentication for app access — resolved: minimal single-user guard (env-configured email/password,
+      login only; see Phase 1 Architecture Decisions)
 - [ ] Matchspace integration (Phase 2) — access method TBD; correlation logic against David Lloyd sessions
 
 ### Frontend
+- [x] Stack decided: Blade + Livewire + Alpine.js (see Phase 1 Architecture Decisions)
 - [ ] Dashboard with filterable charts (sessions/hours, venue, partner, trends/streaks)
 - [ ] Review queue UI (list + confirm/correct/discard actions)
 - [ ] Session list/detail view (including roster history)
@@ -445,7 +494,15 @@ breakdowns by Friendly/Competitive reflect the change
       without needing any API? Unresearched — needs a real example email to check.
 - [ ] Does Matchspace expose an API or send emails, or will results need manual screenshot upload + extraction?
       (needs researching — flagged by the user as unresearched; worst case is screenshot ingestion)
-- [ ] How far back should the historical Gmail scan look (all-time vs a bounded number of years)?
-- [ ] What authentication mechanism should gate access to the app? (flagged as an architecture decision for later)
+- [ ] How far back should the historical Gmail scan look (all-time vs a bounded number of years)? Default
+      proposed for Phase 1 implementation: the earliest date in the already-imported spreadsheet backfill,
+      user-overridable per run — not yet explicitly signed off.
+- [x] What authentication mechanism should gate access to the app? **Resolved:** a minimal single-user guard
+      (env-configured email/password, login only — see Phase 1 Architecture Decisions).
+- [ ] Does the local Claude Code session's Gmail MCP authentication stay valid long enough to survive an
+      unattended daily headless run without re-auth, and if a run fails, how is that surfaced (log file,
+      exit-code check) rather than silently producing nothing?
+- [ ] What's the right narrow tool-permission allowlist for the daily headless `claude -p` capture run (Gmail
+      MCP read tools + the one ingestion-endpoint call), so it isn't run with a blanket permissions-skip?
 - [ ] Data retention/consent policy specifics for Phase 3 health data (currently assumed: retained indefinitely,
       never shared with third parties, same auth as rest of app) — confirm once Phase 3 is scoped.
