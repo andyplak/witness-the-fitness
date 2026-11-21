@@ -41,18 +41,44 @@ explicitly out of scope for this document.
 
 ### Session Capture
 
+> **Research findings (API feasibility):** Investigated whether Playtomic and David Lloyd expose APIs an
+> individual member could use, beyond email parsing.
+> - **Playtomic** does publish an official third-party API (`thirdparty.playtomic.io`), but it is **club/venue-scoped**:
+>   credentials are issued to a venue via Playtomic Manager (Settings → Developer Tools), not to an individual
+>   player, and booking history is capped at the last 3 months with a ~1 call/minute rate limit
+>   ([Playtomic API guide](https://helpmanager.playtomic.com/hc/en-gb/articles/38836515997073)). As a club
+>   member, the user has no route to these credentials. Separately, developers have reverse-engineered the
+>   *mobile app's* traffic (via mitmproxy) to find **booking/payment** endpoints
+>   (`POST /v1/payment_intents`, `PATCH /v1/matches/{id}/registrations`, etc. —
+>   [write-up](https://dev.to/hadriel33/how-i-reverse-engineered-playtomics-mobile-payment-api-to-build-a-padel-court-booking-bot-5ehb)),
+>   but no source found documents a "my match history" or score endpoint reachable this way, and
+>   authentication for that player-facing flow is undocumented in what was found. A `lingolux/playtomic`
+>   GitHub repo turned up in search is unrelated (a different "Playtomic" leaderboard project), not a usable
+>   client.
+> - **David Lloyd**: no public API, developer program, or reverse-engineered client/scraper was found anywhere
+>   (GitHub search, app-traffic write-ups, forums). Booking is app-only per David Lloyd's own help pages.
+> - **Conclusion**: for Phase 1, Gmail email parsing is the only *confirmed* capture mechanism for both
+>   Playtomic and David Lloyd. FR-CAPTURE-002 (API-first) and FR-SCORE-001 (Playtomic API score capture) remain
+>   in this spec as the better path *if* a viable player-level endpoint is found, but should be treated as
+>   unconfirmed/stretch until someone captures their own Playtomic app traffic (login + match-history screens)
+>   to check — see Open Questions.
+
 **FR-CAPTURE-001**: Email-based booking detection
 While Gmail access is connected, when a new booking confirmation email arrives from a recognized venue/platform
 (e.g. Playtomic, David Lloyd), the system shall parse it and create a session record (sport, date, time, duration,
 venue, players) with status `pending_review` or `confirmed` depending on parse confidence.
 
 **FR-CAPTURE-002**: API-first capture where available
-Where an official API is available for a venue or platform (e.g. Playtomic, David Lloyd), the system shall prefer
-that API as the source of booking data for that venue over parsing its emails.
+Where a player-accessible API is confirmed available for a venue or platform, the system shall prefer that API as
+the source of booking data for that venue over parsing its emails. As of this spec, no such player-accessible API
+has been confirmed for either Playtomic (its official API is club/venue-scoped, not member-accessible) or David
+Lloyd (none found) — see the Research findings note above — so this requirement currently has no venue it applies
+to in practice and is retained for if/when one is confirmed.
 
-**FR-CAPTURE-003**: Email fallback
-Where no API integration exists for a venue, the system shall rely on Gmail email parsing to capture that venue's
-bookings.
+**FR-CAPTURE-003**: Email fallback (Phase 1's actual sole mechanism)
+The system shall rely on Gmail email parsing to capture bookings for any venue without a confirmed
+player-accessible API — which, per current research, means Gmail parsing is the mechanism for both Playtomic and
+David Lloyd, not a fallback used only occasionally.
 
 **FR-CAPTURE-004**: Confidence-based auto-confirmation
 When a parsed booking (from email or API) has all required fields recognized with high confidence (sport, date,
@@ -87,8 +113,10 @@ to the review queue (per FR-CAPTURE-005) so the user can map it to an existing p
 
 ### Scores & Results
 
-**FR-SCORE-001**: Where the Playtomic API returns a post-event score for a booking, the system shall store that
-score against the corresponding session.
+**FR-SCORE-001**: Where a post-event score is available for a booking — whether from a (currently unconfirmed)
+Playtomic API, or parsed from a post-match result email/notification Playtomic sends the player — the system
+shall store that score against the corresponding session. Which of these sources actually exists and what it
+returns is unconfirmed (see Research findings above and Open Questions) and needs checking before this is built.
 
 **FR-SCORE-002**: The system shall display the recorded score, where available, on a session's detail view.
 
@@ -390,7 +418,19 @@ breakdowns by Friendly/Competitive reflect the change
       REST API — reading it normally requires an Android app with the relevant permissions. How a server-side
       Laravel app gets this data (e.g. a small companion Android app/shortcut that exports and uploads it) is a
       real open question for whoever scopes Phase 3's architecture, not just a data-mapping detail.
-- [ ] Does David Lloyd expose any public/partner API, or is it email-only in practice?
+- [x] Does David Lloyd expose any public/partner API? **Researched: no.** No public API, developer program, or
+      reverse-engineered client/scraper was found (GitHub, app-traffic write-ups, forums). It is email-only in
+      practice for Phase 1.
+- [x] Does Playtomic expose a player-accessible API? **Researched: not confirmed.** Its official third-party API
+      is club/venue-scoped (requires Playtomic Manager credentials issued to a venue, not a member) and limited
+      to 3 months of history. Reverse-engineered mobile-app traffic write-ups document booking/payment endpoints
+      but no documented "my match history" or score endpoint. Treat as email-only for Phase 1 like David Lloyd.
+- [ ] Would capturing one's own Playtomic app traffic (e.g. with mitmproxy, as the reverse-engineering write-ups
+      did) reveal a player match-history or score endpoint? Unresearched — would need the user to actually do
+      this capture; carries some ToS risk the write-ups didn't address, so worth a deliberate decision before
+      attempting it, and isn't required since Gmail parsing already covers Phase 1.
+- [ ] Does Playtomic's post-match notification email contain the score, as an alternative route to FR-SCORE-001
+      without needing any API? Unresearched — needs a real example email to check.
 - [ ] Does Matchspace expose an API or send emails, or will results need manual screenshot upload + extraction?
       (needs researching — flagged by the user as unresearched; worst case is screenshot ingestion)
 - [ ] How far back should the historical Gmail scan look (all-time vs a bounded number of years)?
