@@ -245,16 +245,28 @@ Health. This means Phase 3 access is indirect: Mi Fitness → Health Connect →
 Note: some Xiaomi bands measure HRV but Xiaomi's own policy blocks HRV from being shared out via this route, so
 HRV may not be available even if everything else works.
 
+The user switches the band/app into a sport-specific exercise mode (e.g. "Tennis", "Padel") before playing, so
+each recorded exercise entry should already carry a matching sport label and a start/end time close to the
+actual session — see FR-WEARABLE-003/004 for how this is used to link wearable data to racket-sport sessions.
+
 **FR-WEARABLE-001** (tentative): While Mi Fitness is configured to sync to Health Connect, the system shall
 ingest daily heart rate, sleep, and exercise summary data made available there, on an ongoing basis.
 
 **FR-WEARABLE-002** (tentative): The system shall display wearable-derived fitness metrics alongside racket-sport
 session statistics on a combined view.
 
-**FR-WEARABLE-003** (tentative): Where a wearable-recorded exercise entry overlaps in time with a confirmed
-racket-sport session, the system shall allow linking them so effort/heart-rate data can be viewed per session.
+**FR-WEARABLE-003** (tentative): The user manually switches Mi Fitness into a specific exercise mode (e.g.
+"Tennis", "Padel"/training mode) when playing, so each wearable exercise entry carries both a start/end time and
+an exercise-type label matching the sport. Where a wearable exercise entry's type matches a confirmed
+racket-sport session's sport and its time range overlaps that session, the system shall treat it as a high-
+confidence match and link them automatically (rather than requiring manual confirmation), so effort/heart-rate
+data can be viewed per session.
 
-**FR-WEARABLE-004** (tentative): Where HRV or other data is unavailable via Health Connect due to Xiaomi's
+**FR-WEARABLE-004** (tentative): Where a wearable exercise entry's time overlaps a confirmed session but its
+exercise-type label does not match the session's sport (or is a generic/unlabelled workout), the system shall
+still offer it as a candidate link but require manual confirmation rather than auto-linking.
+
+**FR-WEARABLE-005** (tentative): Where HRV or other data is unavailable via Health Connect due to Xiaomi's
 sync restrictions, the system shall omit that metric rather than erroring.
 
 ## Non-Functional Requirements
